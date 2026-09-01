@@ -26,4 +26,4 @@ loadEnvFile(".env.kra");
 const app = require("./servers/kra-etims");
 
 const server = http.createServer(app);
-server.listen();
+server.listen(3000,() => console.log("Started!");
