@@ -6,7 +6,7 @@ const DEFAULT_MPESA_CONFIG = {
   consumerKey: process.env.MPESA_CONSUMER_KEY || "",
   consumerSecret: process.env.MPESA_CONSUMER_SECRET || "",
   shortCode: process.env.MPESA_SHORTCODE || 174379,
-  passkey: process.env.MPESA_PASSKEY || "",
+  passkey: process.env.MPESA_PASSKEY || "bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919",
   callbackUrl: process.env.MPESA_CALLBACK_URL || "https://api.yelivate.top/api/mpesa/callback",
   baseUrl: process.env.MPESA_BASE_URL || "https://sandbox.safaricom.co.ke",
 };
@@ -38,7 +38,7 @@ function getBusinessMpesaConfig(businessCode = DEFAULT_BUSINESS_CODE) {
 
 function resolveMpesaConfigForRequest(req, fallbackConfig = {}) {
   const businessCode = normalizeBusinessCode(
-    req?.params?.businessCode || req?.query?.business || req?.headers?.["x-business-code"] || req?.businessCode || DEFAULT_BUSINESS_CODE
+    req?.params?.businessCode || req?.query?.business || req?.headers?.["x-business-code"] || req?.businessCode || DEFAULT_BUSINESS_CODE,
   );
 
   return {
@@ -136,24 +136,41 @@ async function initiateMpesaSTK({
   transactionDesc,
   config = DEFAULT_MPESA_CONFIG,
 }) {
+  const shortCode = String(config.shortCode || "").trim();
+  const passkey = String(config.passkey || "").trim();
+  const baseUrl = String(config.baseUrl || DEFAULT_MPESA_CONFIG.baseUrl).trim();
+
+  if (!phoneNumber) {
+    throw new Error("Phone number is required");
+  }
+
+  if (!shortCode || !passkey) {
+    throw new Error("M-PESA short code and passkey are required for STK push.");
+  }
+
+  if (!amount || Number(amount) <= 0) {
+    throw new Error("Valid amount is required");
+  }
+
   const accessToken = await getMpesaAccessToken(config);
   const timestamp = getMpesaTimestamp();
-  const password = Buffer.from(`${Number(config.shortCode)}${String(config.passkey)}${timestamp}`, "utf8").toString("base64");
+  const password = Buffer.from(`${shortCode}${passkey}${timestamp}`, "utf8").toString("base64");
 
-  const response = await fetch(`${config.baseUrl || "https://sandbox.safaricom.co.ke"}/mpesa/stkpush/v1/processrequest`, {
+  const response = await fetch(`${baseUrl}/mpesa/stkpush/v1/processrequest`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
+      Accept: "application/json",
     },
     body: JSON.stringify({
-      BusinessShortCode: Number(config.shortCode),
+      BusinessShortCode: Number(shortCode),
       Password: password,
       Timestamp: timestamp,
       TransactionType: "CustomerPayBillOnline",
       Amount: Math.round(Number(amount)),
       PartyA: phoneNumber,
-      PartyB: Number(config.shortCode),
+      PartyB: Number(shortCode),
       PhoneNumber: phoneNumber,
       CallBackURL: config.callbackUrl,
       AccountReference: accountReference || "XSFARM",
@@ -161,11 +178,18 @@ async function initiateMpesaSTK({
     }),
   });
 
-  const data = await response.json();
+  const rawBody = await response.text();
+  let data = {};
+
+  try {
+    data = rawBody ? JSON.parse(rawBody) : {};
+  } catch (error) {
+    throw new Error(`Daraja returned invalid JSON for STK push: ${rawBody}`);
+  }
 
   if (!response.ok) {
     console.error("Daraja STK error:", data);
-    throw new Error(data.errorMessage || data.ResponseDescription || "STK Push failed");
+    throw new Error(data.errorMessage || data.ResponseDescription || rawBody || "STK Push failed");
   }
 
   return data;
@@ -186,7 +210,7 @@ function buildMpesaRouter(options = {}) {
   router.post("/stkpush", async (req, res) => {
     try {
       const config = resolveConfig(req);
-      const { phoneNumber, amount, accountReference, transactionDesc } = req.body;
+      const { phoneNumber, amount, accountReference, transactionDesc } = req.body || {};
 
       if (!phoneNumber) {
         return res.status(400).json({ success: false, message: "Phone number is required" });
@@ -205,7 +229,7 @@ function buildMpesaRouter(options = {}) {
       });
 
       if (result.CheckoutRequestID) {
-        const payment = store.create({
+        store.create({
           status: "pending",
           amount: Number(amount),
           phoneNumber,
@@ -214,107 +238,20 @@ function buildMpesaRouter(options = {}) {
           transactionId: null,
           source: "stk",
         });
-
-        console.log("M-PESA PAYMENT STORED:", payment);
       }
 
-      res.json({ success: true, ...result });
+      return res.json({ success: true, ...result });
     } catch (error) {
       console.error("M-Pesa STK Push failed:", error);
-      res.status(500).json({ success: false, message: error.message });
-    }
-  });
-
-  router.get("/stk-test", async (req, res) => {
-    try {
-      const config = resolveConfig(req);
-      console.log("\n========== M-PESA STK TEST ==========");
-
-        const phoneNumber = "254708374149";
-        const amount = 10;
-        const result = await initiateMpesaSTK({
-          phoneNumber,
-          amount,
-          accountReference: "TEST-001",
-          transactionDesc: "XS Farm POS test",
-          config,
-        });
-
-      console.log("STK TEST RESULT:", JSON.stringify(result, null, 2));
-
-      if (!result.CheckoutRequestID) {
-        console.error("No CheckoutRequestID returned by Daraja.");
-        return res.status(500).json({
-          success: false,
-          message: "STK Push succeeded but no CheckoutRequestID was returned.",
-          result,
-        });
-      }
-
-      const payment = store.create({
-        status: "pending",
-        amount,
-        phoneNumber,
-        merchantRequestId: result.MerchantRequestID || null,
-        checkoutRequestId: result.CheckoutRequestID,
-        transactionId: null,
-        source: "stk",
-      });
-
-      console.log("M-PESA PAYMENT SAVED TO STORE:");
-      console.log(JSON.stringify(payment, null, 2));
-
-      const savedPayment = store.get(result.CheckoutRequestID);
-      console.log("M-PESA PAYMENT READ BACK FROM STORE:");
-      console.log(JSON.stringify(savedPayment, null, 2));
-
-      console.log("====================================\n");
-
-      res.json({
-        success: true,
-        message: "STK Push initiated and payment persisted.",
-        checkoutRequestId: result.CheckoutRequestID,
-        merchantRequestId: result.MerchantRequestID,
-        payment: savedPayment,
-      });
-    } catch (error) {
-      console.error("STK TEST ERROR:", error);
-      res.status(500).json({ success: false, message: error.message });
-    }
-  });
-
-  router.get("/auth-test", async (req, res) => {
-    const config = resolveConfig(req);
-    console.log("\n========== DARAJA AUTH TEST ==========");
-    console.log("Consumer Key present:", !!config.consumerKey);
-    console.log("Consumer Secret present:", !!config.consumerSecret);
-    console.log("Shortcode present:", !!config.shortCode);
-    console.log("Passkey present:", !!config.passkey);
-
-    try {
-      const token = await getMpesaAccessToken(config);
-      console.log("Token received:", !!token);
-
-      return res.status(200).json({
-        success: true,
-        message: "Daraja authentication successful",
-        tokenReceived: !!token,
-      });
-    } catch (error) {
-      console.error("AUTH TEST ERROR:", error);
-      return res.status(500).json({ success: false, error: error.message });
+      return res.status(500).json({ success: false, message: error.message });
     }
   });
 
   router.post("/callback", (req, res) => {
-    console.log("\n========== M-PESA CALLBACK ==========");
-    console.log(JSON.stringify(req.body, null, 2));
-
     try {
       const callback = req.body?.Body?.stkCallback;
 
       if (!callback) {
-        console.warn("Invalid M-PESA callback structure");
         return res.json({ ResultCode: 0, ResultDesc: "Accepted" });
       }
 
@@ -326,7 +263,6 @@ function buildMpesaRouter(options = {}) {
         payment = store.get(CheckoutRequestID);
       } catch (error) {
         if (error.status === 404) {
-          console.warn("M-PESA payment not found:", CheckoutRequestID);
           return res.json({ ResultCode: 0, ResultDesc: "Accepted" });
         }
         throw error;
@@ -336,45 +272,33 @@ function buildMpesaRouter(options = {}) {
         const metadata = CallbackMetadata?.Item || [];
         const getMetadata = (name) => metadata.find((item) => item.Name === name)?.Value;
 
-        const transactionId = getMetadata("MpesaReceiptNumber");
-        const amount = getMetadata("Amount");
-        const transactionDate = getMetadata("TransactionDate");
-        const phoneNumber = getMetadata("PhoneNumber");
-
         const updatedPayment = store.update(CheckoutRequestID, {
           status: "completed",
-          transactionId: transactionId || null,
-          amount: amount ?? payment.amount,
-          phoneNumber: phoneNumber || payment.phoneNumber,
-          transactionDate: transactionDate || null,
+          transactionId: getMetadata("MpesaReceiptNumber") || null,
+          amount: getMetadata("Amount") ?? payment.amount,
+          phoneNumber: getMetadata("PhoneNumber") || payment.phoneNumber,
+          transactionDate: getMetadata("TransactionDate") || null,
           resultCode: Number(ResultCode),
           resultDesc: ResultDesc,
           merchantRequestId: MerchantRequestID,
         });
 
-        console.log("M-PESA PAYMENT COMPLETED:", updatedPayment);
-      } else {
-        const updatedPayment = store.update(CheckoutRequestID, {
-          status: "failed",
-          source: "stk",
-          resultCode: Number(ResultCode),
-          resultDesc: ResultDesc,
-          merchantRequestId: MerchantRequestID,
-        });
-
-        console.log("M-PESA PAYMENT FAILED:", updatedPayment);
+        return res.json({ ResultCode: 0, ResultDesc: "Accepted", payment: updatedPayment });
       }
+
+      const updatedPayment = store.update(CheckoutRequestID, {
+        status: "failed",
+        source: "stk",
+        resultCode: Number(ResultCode),
+        resultDesc: ResultDesc,
+        merchantRequestId: MerchantRequestID,
+      });
+
+      return res.json({ ResultCode: 0, ResultDesc: "Accepted", payment: updatedPayment });
     } catch (error) {
       console.error("Error processing M-PESA callback:", error);
+      return res.status(500).json({ ResultCode: 1, ResultDesc: "Internal server error" });
     }
-
-    console.log("====================================\n");
-    res.json({ ResultCode: 0, ResultDesc: "Accepted" });
-  });
-
-  router.get("/test", (req, res) => {
-    const businessCode = normalizeBusinessCode(req.params.businessCode || req.query.business || req.headers["x-business-code"] || DEFAULT_BUSINESS_CODE);
-    res.json({ success: true, message: "M-Pesa API is running", sandbox: true, business: businessCode });
   });
 
   router.get("/status/:checkoutRequestId", (req, res) => {
@@ -382,14 +306,14 @@ function buildMpesaRouter(options = {}) {
 
     try {
       const payment = store.get(checkoutRequestId);
-      res.json({ success: true, payment });
+      return res.json({ success: true, payment });
     } catch (error) {
       if (error.status === 404) {
         return res.status(404).json({ success: false, message: "M-PESA payment not found" });
       }
 
       console.error("M-PESA status error:", error);
-      res.status(500).json({ success: false, message: "Failed to retrieve M-PESA payment" });
+      return res.status(500).json({ success: false, message: "Failed to retrieve M-PESA payment" });
     }
   });
 
