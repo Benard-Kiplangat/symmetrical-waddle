@@ -23,7 +23,10 @@ function loadEnvFile(fileName) {
 loadEnvFile(".env.mpesa");
 loadEnvFile(".env.kra");
 
+const SERVER_PORT = Number(process.env.PORT) || 3000;
 const app = require("./servers/kra-etims");
 
 const server = http.createServer(app);
-server.listen(3000,() => console.log("Started!"));
+server.listen(SERVER_PORT, () => {
+  console.log(`Server started on port ${SERVER_PORT}`);
+});
