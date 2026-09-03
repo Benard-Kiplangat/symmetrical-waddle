@@ -218,7 +218,7 @@ function createDigitaxRouter() {
         params: {
           before: req.query.before,
           after: req.query.after,
-          page_size: req.query.page_size,
+          page_size: req.query.page_size > 20 ? 20 : req.query.page_size,
         },
       });
       return res.json({ success: true, business: config.businessCode, data: response.data });
@@ -306,7 +306,7 @@ function createDigitaxRouter() {
         params: {
           before: req.query.before,
           after: req.query.after,
-          page_size: req.query.page_size,
+          page_size: req.query.page_size > 20 ? 20 : req.query.page_size,
         },
       });
 
@@ -507,7 +507,7 @@ function createDigitaxRouter() {
         params: {
           before: req.query.before,
           after: req.query.after,
-          page_size: req.query.page_size,
+          page_size: req.query.page_size > 20 ? 20 : req.query.page_size,
         },
       });
       return res.json({ success: true, business: config.businessCode, data: response.data });
