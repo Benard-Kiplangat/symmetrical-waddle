@@ -8,7 +8,7 @@ const DEFAULT_BUSINESS_CODE = String(process.env.DEFAULT_BUSINESS || "default").
 const DEFAULT_DIGITAX_URL = "https://api.digitax.tech/ke/v2";
 
 const app = express();
-const allowedOrigins = (process.env.CORS_ORIGIN || "http://localhost:5003,http://127.0.0.1:5003")
+const allowedOrigins = (process.env.CORS_ORIGIN || "http://localhost:5003,http://127.0.0.1:5003,https://yelivate.top")
   .split(",")
   .map((origin) => origin.trim())
   .filter(Boolean);
